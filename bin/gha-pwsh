@@ -38,7 +38,7 @@ try {
 }
 catch {
     function LogError([string] $exception) {
-        Write-Host -ForegroundColor Red $exception
+        Write-Host "::error::$exception"
     }
 
     # Type of $_: System.Management.Automation.ErrorRecord
