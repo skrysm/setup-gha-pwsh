@@ -1,0 +1,14 @@
+name: Set up gha-pwsh
+description: Makes the gha-pwsh wrapper available to subsequent GitHub Actions steps.
+
+runs:
+  using: composite
+  steps:
+    - name: Add custom gha-pwsh wrapper to PATH
+      shell: pwsh
+      run: |
+        $BIN_PATH = "$env:GITHUB_ACTION_PATH/bin"
+
+        if ($BIN_PATH -notin ($env:PATH -split [IO.Path]::PathSeparator)) {
+            $BIN_PATH >> $env:GITHUB_PATH
+        }

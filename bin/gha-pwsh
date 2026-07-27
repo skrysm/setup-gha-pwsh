@@ -1,0 +1,32 @@
+#!/usr/bin/env pwsh
+
+param (
+    [Parameter(Mandatory = $true)]
+    [string] $ScriptPath
+)
+
+# Match the error preference configured by GitHub's built-in PowerShell shell.
+$ErrorActionPreference = 'Stop'
+
+# IMPORTANT: GitHub does not assign a .ps1 extension when using a custom shell. PowerShell
+#   only executes dot-sourced script files with a recognized PowerShell extension.
+#   Files without such an extension are simply ignored - not error is logged.
+$hasPowerShellExtension = [IO.Path]::GetExtension($ScriptPath) -ieq '.ps1'
+$powershellScriptPath = if ($hasPowerShellExtension) { $ScriptPath } else { "$ScriptPath.ps1" }
+
+if (-not $hasPowerShellExtension) {
+    Copy-Item -LiteralPath $ScriptPath -Destination $powershellScriptPath
+}
+
+try {
+    # Dot source (import) the script.
+    . $powershellScriptPath
+}
+finally {
+    if (-not $hasPowerShellExtension) {
+        Remove-Item -LiteralPath $powershellScriptPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# Do not let a previously handled native exit code determine the step result.
+exit 0
