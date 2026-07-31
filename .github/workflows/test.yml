@@ -129,3 +129,25 @@ jobs:
           finally {
               Remove-Item $tempScriptPath -Force -ErrorAction SilentlyContinue
           }
+
+  pr_gate:
+    name: PR Gate
+
+    needs:
+      - tests
+
+    # GitHub treats skipped jobs as successful required checks (which may be counter-intuitive). Thus, always
+    # run this gate so a failed test matrix produces a failing PR Gate check and blocks the merge.
+    # See: https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks#handling-skipped-but-required-checks
+    if: ${{ always() }}
+
+    runs-on: ubuntu-slim
+
+    steps:
+      - name: Verify that all tests passed
+        shell: pwsh
+        run: |
+          if ('${{ needs.tests.result }}' -ne 'success') {
+              Write-Host "::error::The test matrix finished with result '${{ needs.tests.result }}'."
+              exit 1
+          }
