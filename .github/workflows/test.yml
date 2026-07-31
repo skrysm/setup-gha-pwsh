@@ -1,0 +1,131 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Run Tests | ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-latest
+          - ubuntu-slim
+          - windows-latest
+          - ubuntu-24.04-arm
+          - macos-latest
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      # ---------------------------------------------------------------------------
+      #
+      # Setup
+      #
+      # ---------------------------------------------------------------------------
+
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up gha-pwsh
+        uses: ./
+
+      # ---------------------------------------------------------------------------
+      #
+      # Tests
+      #
+      # ---------------------------------------------------------------------------
+
+      # Tests that gha-pwsh executes the specified PowerShell code.
+      - name: Execute an inner script
+        id: inner_script
+        shell: gha-pwsh {0}
+        run: |
+          "executed=true" >> $env:GITHUB_OUTPUT
+      - name: Verify that the inner script was executed
+        shell: pwsh
+        env:
+          INNER_SCRIPT_EXECUTED: ${{ steps.inner_script.outputs.executed }}
+        run: |
+          if ($env:INNER_SCRIPT_EXECUTED -ne 'true') {
+              throw 'The inner script was not executed.'
+          }
+
+      # Tests that a (handled) native failure does not fail the workflow step.
+      - name: Ignore native exit codes
+        shell: gha-pwsh {0}
+        run: |
+          & pwsh -NoLogo -NoProfile -Command 'exit 42'
+
+          if ($LASTEXITCODE -ne 42) {
+              throw "Expected the native command to exit with code 42, but got $LASTEXITCODE."
+          }
+
+          Write-Host 'The native command failure was handled.'
+
+      # Tests that an explicit nonzero exit from the inner script fails the step.
+      - name: Propagate a nonzero PowerShell exit code
+        id: nonzero_exit
+        continue-on-error: true
+        shell: gha-pwsh {0}
+        run: |
+          exit 42
+      - name: Verify that the nonzero exit failed the step
+        shell: pwsh
+        env:
+          EXIT_STEP_OUTCOME: ${{ steps.nonzero_exit.outcome }}
+        run: |
+          if ($env:EXIT_STEP_OUTCOME -ne 'failure') {
+              throw "Expected the nonzero exit step to fail, but its outcome was '$env:EXIT_STEP_OUTCOME'."
+          }
+
+      # Tests that gha-pwsh returns a failure for an unhandled exception.
+      - name: Propagate an unhandled PowerShell error
+        id: unhandled_error
+        continue-on-error: true
+        shell: gha-pwsh {0}
+        run: |
+          throw 'gha-pwsh-test-error'
+      - name: Verify that the error failed the step
+        shell: pwsh
+        env:
+          ERROR_STEP_OUTCOME: ${{ steps.unhandled_error.outcome }}
+        run: |
+          if ($env:ERROR_STEP_OUTCOME -ne 'failure') {
+              throw "Expected the error step to fail, but its outcome was '$env:ERROR_STEP_OUTCOME'."
+          }
+
+      # Tests that an unhandled error emits a GitHub Actions error annotation.
+      - name: Test error annotations
+        shell: pwsh
+        run: |
+          $tempScriptPath = Join-Path $env:RUNNER_TEMP 'gha-pwsh-annotation-test'
+          Set-Content $tempScriptPath -Value "throw 'gha-pwsh-test-error'"
+
+          try {
+              $output = & gha-pwsh $tempScriptPath *>&1 | Out-String
+              $exitCode = $LASTEXITCODE
+
+              if ($exitCode -ne 1) {
+                  throw "Expected gha-pwsh to exit with code 1, but got $exitCode."
+              }
+
+              if ($output -notmatch '(?m)^::error::gha-pwsh-test-error') {
+                  throw "Expected an error workflow command, but got:`n$output"
+              }
+
+              # Reset $LASTEXITCODE to 0 to avoid this step from failing
+              exit 0
+          }
+          finally {
+              Remove-Item $tempScriptPath -Force -ErrorAction SilentlyContinue
+          }
