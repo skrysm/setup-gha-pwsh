@@ -1,0 +1,55 @@
+{
+	// Dashboard: https://developer.mend.io/
+	// Documentation: https://docs.renovatebot.com/configuration-options/
+
+	"$schema": "https://docs.renovatebot.com/renovate-schema.json",
+
+	"extends": [
+		"config:recommended"
+	],
+
+	"dependencyDashboard": true,
+	"dependencyDashboardLabels": ["renovate", "dependency-dashboard"],
+
+	"configMigration": true,
+
+	// Disable default "PR per hour" limit and instead use "concurrent PR limit".
+	"prHourlyLimit": 0,
+	"prConcurrentLimit": 5,
+
+	// Base label for all PRs. Is extended via "addLabels" on package rules.
+	"labels": ["renovate"],
+
+	// The columns to show in PRs for each updated dependency.
+	"prBodyColumns": [
+		"Package",
+		"Change",
+		"Update"
+	],
+
+	//
+	// Defines Renovate rules. All rules are evaluated in order. If multiple rules match a dependency, configurations from
+	// matching rules will be merged together. The order of rules matters, because later rules will override configuration
+	// options from earlier ones, if they both specify the same option.
+	//
+	// IMPORTANT: This means that least specific rules must come first, not last.
+	//
+	// Each package rule must include at least one "match..." matcher. If multiple matchers are included in one package
+	// rule, all of them must match.
+	//
+	// All updates sharing the same "groupName" will be placed into the same branch/PR. The group name is used for both
+	// the title and the branch name ("<branchPrefix><groupName>") for PRs.
+	//
+	// For managers, see: https://docs.renovatebot.com/modules/manager/
+	//
+	// For datasources, see: https://docs.renovatebot.com/modules/datasource/
+	//
+	"packageRules": [
+		{
+			"matchManagers": ["github-actions"],
+			"groupName": "GitHub Actions",
+			"automerge": true,
+			"addLabels": ["github-actions"]
+		}
+	]
+}
