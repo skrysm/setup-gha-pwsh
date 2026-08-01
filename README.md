@@ -25,6 +25,6 @@ The setup step must run before the first step that uses the custom shell. It's c
 
 The `gha-pwsh` script does the following:
 
-* It provides proper exception handling that produces full stacktraces for PowerShell exceptions.
-* Error are communicated via GitHub Actions error annotations in the workflow run overview.
+* It provides proper exception handling that produces full stack traces for PowerShell exceptions.
+* Errors are written to the step log and as a full diagnostic in the job summary.
 * It prevents `$LASTEXITCODE` from an inner call to "leak" to GitHub and thus fail the step even if the inner call was handled.
