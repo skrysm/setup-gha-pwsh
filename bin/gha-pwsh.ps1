@@ -163,5 +163,6 @@ catch {
     Write-Host $diagnostic
     Write-GitHubJobSummary $diagnostic
 
-    exit 1
+    # NOTE: Linux only allows exit codes 0 - 255.
+    exit 255
 }

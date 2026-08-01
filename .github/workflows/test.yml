@@ -124,8 +124,8 @@ jobs:
               $output = & pwsh -NoLogo -NoProfile -File $ghaPwshScriptPath $tempScriptPath *>&1 | Out-String
               $exitCode = $LASTEXITCODE
 
-              if ($exitCode -ne 1) {
-                  throw "Expected gha-pwsh to exit with code 1, but got $exitCode."
+              if ($exitCode -ne 255) {
+                  throw "Expected gha-pwsh to exit with code 255, but got $exitCode."
               }
 
               if ($output -match '(?m)^::error::') {
