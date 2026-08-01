@@ -104,23 +104,70 @@ jobs:
               throw "Expected the error step to fail, but its outcome was '$env:ERROR_STEP_OUTCOME'."
           }
 
-      # Tests that an unhandled error emits a GitHub Actions error annotation.
-      - name: Test error annotations
+      # Tests that an unhandled error is logged and added to the full job summary without an annotation.
+      - name: Test error reporting
         shell: pwsh
         run: |
-          $tempScriptPath = Join-Path $env:RUNNER_TEMP 'gha-pwsh-annotation-test'
-          Set-Content $tempScriptPath -Value "throw 'gha-pwsh-test-error'"
+          $tempScriptPath = Join-Path $env:RUNNER_TEMP 'gha-pwsh-error-reporting-test'
+          $tempSummaryPath = Join-Path $env:RUNNER_TEMP 'gha-pwsh-error-reporting-summary.md'
+          Set-Content $tempScriptPath -Value @'
+          function Invoke-GhaPwshTestFailure {
+              throw 'gha-pwsh-test-error'
+          }
+
+          Invoke-GhaPwshTestFailure
+          '@
 
           try {
-              $output = & gha-pwsh $tempScriptPath *>&1 | Out-String
+              $env:GITHUB_STEP_SUMMARY = $tempSummaryPath
+              $ghaPwshScriptPath = Join-Path $env:GITHUB_WORKSPACE 'bin/gha-pwsh.ps1'
+              $output = & pwsh -NoLogo -NoProfile -File $ghaPwshScriptPath $tempScriptPath *>&1 | Out-String
               $exitCode = $LASTEXITCODE
 
               if ($exitCode -ne 1) {
                   throw "Expected gha-pwsh to exit with code 1, but got $exitCode."
               }
 
-              if ($output -notmatch '(?m)^::error::gha-pwsh-test-error') {
-                  throw "Expected an error workflow command, but got:`n$output"
+              if ($output -match '(?m)^::error::') {
+                  throw "Expected no error workflow command, but got:`n$output"
+              }
+
+              if ($output -notmatch '(?m)^gha-pwsh-test-error\r?$') {
+                  throw "Expected the error message in the output, but got:`n$output"
+              }
+
+              if ($output -notmatch '(?m)^at Invoke-GhaPwshTestFailure,') {
+                  throw "Expected a stack trace in the output, but got:`n$output"
+              }
+
+              if ($output -notmatch '(?m)^at GitHub Actions step, line 5\r?$') {
+                  throw "Expected a simplified GitHub Actions step frame in the output, but got:`n$output"
+              }
+
+              if ($output -match '(?m)^at .*[\\/]gha-pwsh\.ps1: line \d+\r?$') {
+                  throw "Expected no wrapper frame in the output, but got:`n$output"
+              }
+
+              $summary = Get-Content -LiteralPath $tempSummaryPath -Raw
+
+              if ($summary -notmatch '(?m)^### ❌ PowerShell error\r?$') {
+                  throw "Expected a PowerShell error heading in the job summary, but got:`n$summary"
+              }
+
+              if ($summary -notmatch '(?m)^```text\r?$' -or $summary -notmatch '(?m)^```\r?$') {
+                  throw "Expected a fenced text block in the job summary, but got:`n$summary"
+              }
+
+              if ($summary -notmatch '(?m)^gha-pwsh-test-error\r?$' -or $summary -notmatch '(?m)^at Invoke-GhaPwshTestFailure,') {
+                  throw "Expected the full diagnostic in the job summary, but got:`n$summary"
+              }
+
+              if ($summary -notmatch '(?m)^at GitHub Actions step, line 5\r?$') {
+                  throw "Expected a simplified GitHub Actions step frame in the job summary, but got:`n$summary"
+              }
+
+              if ($summary -match '(?m)^at .*[\\/]gha-pwsh\.ps1: line \d+\r?$') {
+                  throw "Expected no wrapper frame in the job summary, but got:`n$summary"
               }
 
               # Reset $LASTEXITCODE to 0 to avoid this step from failing
@@ -128,6 +175,7 @@ jobs:
           }
           finally {
               Remove-Item $tempScriptPath -Force -ErrorAction SilentlyContinue
+              Remove-Item $tempSummaryPath -Force -ErrorAction SilentlyContinue
           }
 
   pr_gate:

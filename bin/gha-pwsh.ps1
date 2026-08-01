@@ -9,6 +9,10 @@ $ErrorActionPreference = 'Stop'
 try {
     ########################################################################
 
+    function Get-CallerLineNumber {
+        $MyInvocation.ScriptLineNumber
+    }
+
     # IMPORTANT: GitHub does not assign a .ps1 extension when using a custom shell. PowerShell
     #   only executes dot-sourced script files with a recognized PowerShell extension.
     #   Files without such an extension are simply ignored - not error is logged.
@@ -21,6 +25,8 @@ try {
 
     try {
         # Dot source (import) the script.
+        # IMPORTANT: Keep this assignment directly above the dot-source statement.
+        $dotSourceLineNumber = (Get-CallerLineNumber) + 1
         . $powershellScriptPath
         $scriptExitCode = if ($?) { 0 } else { $LASTEXITCODE }
     }
@@ -36,8 +42,80 @@ try {
     ########################################################################
 }
 catch {
-    function LogError([string] $exception) {
-        Write-Host "::error::$exception"
+    function Get-CleanedScriptStackTrace(
+        [string] $scriptStackTrace,
+        [int] $dotSourceLineNumber,
+        [string] $stepScriptPath
+    ) {
+        if ([string]::IsNullOrWhiteSpace($scriptStackTrace)) {
+            return $scriptStackTrace
+        }
+
+        # The final frame normally points to the dot-sourcing statement in this wrapper and does
+        # not help diagnose the user's script. Preserve single-frame traces because those can
+        # represent errors originating in the wrapper itself.
+        $scriptStackTraceLines = @($scriptStackTrace -split '\r\n|\n')
+        $finalFrameLineNumber = if ($scriptStackTraceLines[-1] -match ': line (\d+)$') {
+            [int] $Matches[1]
+        }
+
+        if ($scriptStackTraceLines.Count -gt 1 -And $finalFrameLineNumber -eq $dotSourceLineNumber) {
+            $scriptStackTraceLines = @($scriptStackTraceLines[0..($scriptStackTraceLines.Count - 2)])
+        }
+
+        # GitHub Actions stores the inline step in a temporary script. Replace that implementation
+        # detail with a recognizable label while retaining the useful line number. Only rewrite
+        # ScriptBlock frames that point to the exact script passed to this wrapper.
+        $normalizedStepScriptPath = [IO.Path]::GetFullPath($stepScriptPath)
+        for ($index = 0; $index -lt $scriptStackTraceLines.Count; $index++) {
+            if ($scriptStackTraceLines[$index] -notmatch '^at <ScriptBlock>, (?<path>.+): line (?<lineNumber>\d+)$') {
+                continue
+            }
+
+            $normalizedFramePath = [IO.Path]::GetFullPath($Matches.path)
+            $pathsMatch = if ($IsWindows) {
+                $normalizedFramePath -ieq $normalizedStepScriptPath
+            }
+            else {
+                $normalizedFramePath -ceq $normalizedStepScriptPath
+            }
+
+            if ($pathsMatch) {
+                $scriptStackTraceLines[$index] = "at GitHub Actions step, line $($Matches.lineNumber)"
+            }
+        }
+
+        return $scriptStackTraceLines -join [Environment]::NewLine
+    }
+
+    function Write-GitHubJobSummary([string] $diagnostic) {
+        if ([string]::IsNullOrWhiteSpace($env:GITHUB_STEP_SUMMARY)) {
+            return
+        }
+
+        # Use a fence longer than any sequence in the diagnostic so arbitrary exception text
+        # cannot end the code block early.
+        $longestFence = 2
+        foreach ($match in [regex]::Matches($diagnostic, '`+')) {
+            $longestFence = [Math]::Max($longestFence, $match.Length)
+        }
+        $fence = '`' * ($longestFence + 1)
+
+        $summary = [string]::Join([Environment]::NewLine, @(
+            ''
+            '### ❌ PowerShell error'
+            ''
+            "${fence}text"
+            $diagnostic
+            $fence
+        ))
+
+        try {
+            Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $summary -Encoding utf8
+        }
+        catch {
+            Write-Warning "Could not add the PowerShell error to the GitHub job summary: $($_.Exception.Message)"
+        }
     }
 
     # Type of $_: System.Management.Automation.ErrorRecord
@@ -59,20 +137,31 @@ catch {
     #   the type 'Microsoft.PowerShell.Commands.WriteErrorException' is not always available (most likely
     #   when Write-Error has never been called).
     if ($_.Exception.GetType().FullName -eq 'Microsoft.PowerShell.Commands.WriteErrorException') {
-        # Print error messages (without stacktrace)
-        LogError $unhandledExceptionMessage
+        # Print error messages without a stack trace.
+        $errorHeadline = $unhandledExceptionMessage
+        $scriptStackTrace = $null
     }
     else {
-        # Print proper exception message (including stack trace)
+        # Print proper exception message (including stack trace).
         # NOTE: We can't create a catch block for "RuntimeException" as every exception
         #   seems to be interpreted as RuntimeException.
         if ($_.Exception.GetType().FullName -eq 'System.Management.Automation.RuntimeException') {
-            LogError "$unhandledExceptionMessage$([Environment]::NewLine)$($_.ScriptStackTrace)"
+            $errorHeadline = $unhandledExceptionMessage
         }
         else {
-            LogError "$($_.Exception.GetType().Name): $unhandledExceptionMessage$([Environment]::NewLine)$($_.ScriptStackTrace)"
+            $errorHeadline = "$($_.Exception.GetType().Name): $unhandledExceptionMessage"
         }
+
+        $scriptStackTrace = Get-CleanedScriptStackTrace $_.ScriptStackTrace $dotSourceLineNumber $powershellScriptPath
     }
+
+    $diagnostic = $errorHeadline
+    if (-not [string]::IsNullOrWhiteSpace($scriptStackTrace)) {
+        $diagnostic += "$([Environment]::NewLine)$scriptStackTrace"
+    }
+
+    Write-Host $diagnostic
+    Write-GitHubJobSummary $diagnostic
 
     exit 1
 }
