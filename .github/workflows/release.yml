@@ -74,7 +74,7 @@ jobs:
     uses: ./.github/workflows/test.yml
 
   publish_github_release:
-    name: Publish GitHub Release
+    name: Publish GitHub Release | ${{ github.ref_name }}
 
     needs:
       - validate_release_tag
