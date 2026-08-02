@@ -1,0 +1,229 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+jobs:
+  validate_release_tag:
+    name: Validate Release Tag
+
+    runs-on: ubuntu-latest
+
+    outputs:
+      major_tag: ${{ steps.version.outputs.major_tag }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up gha-pwsh
+        uses: ./
+
+      # Verify that the release tag is "vX.Y.Z" (and not something else) and derive the corresponding sliding
+      # major tag (e.g. "v1", "v2", ...).
+      - name: Validate version
+        id: version
+        shell: gha-pwsh {0}
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          # Reject anything except a stable, complete semantic version so malformed and prerelease tags cannot be published.
+          if ($env:RELEASE_TAG -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+              # Add a visible workflow annotation that explains why the supplied tag was rejected.
+              Write-Host "::error::Release tag '$env:RELEASE_TAG' is not a stable semantic version such as 'v1.2.3'."
+
+              # Fail validation so neither the tests nor either release job can start.
+              exit 1
+          }
+
+          # Export the matching major tag so the final job knows which sliding tag to update.
+          "major_tag=v$($Matches[1])" >> $env:GITHUB_OUTPUT
+
+      # Prevents tags on unmerged branches from being released.
+      - name: Verify that the release commit is on main
+        shell: gha-pwsh {0}
+        run: |
+          # Fetch the current main branch explicitly so the ancestry check uses the latest remote state.
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ($LASTEXITCODE -ne 0) {
+              throw "Could not fetch the main branch (git exited with code $LASTEXITCODE)."
+          }
+
+          # Check whether the tagged commit is on the main branch.
+          # "git merge-base --is-ancestor A B" checks if commit A is part of B's history.
+          # Exit code 0 means "yes", exit code 1 means "no".
+          git merge-base --is-ancestor $env:GITHUB_SHA refs/remotes/origin/main
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "::error::Release commit '$env:GITHUB_SHA' is not contained in the main branch."
+              exit 1
+          }
+
+  test_release_candidate:
+    name: Test Release Candidate
+
+    needs:
+      - validate_release_tag
+
+    uses: ./.github/workflows/test.yml
+
+  publish_github_release:
+    name: Publish GitHub Release
+
+    needs:
+      - validate_release_tag
+      - test_release_candidate
+
+    permissions:
+      contents: write
+
+    runs-on: ubuntu-latest
+
+    environment:
+      name: release
+      url: ${{ format('{0}/{1}/releases/tag/{2}', github.server_url, github.repository, github.ref_name) }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up gha-pwsh
+        uses: ./
+
+      # Publish the exact-version release.
+      - name: Publish GitHub release
+        shell: gha-pwsh {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          # Create the stable release from the pushed tag and generate notes from the intervening commits.
+          gh release create $env:RELEASE_TAG `
+              --fail-on-no-commits `
+              --generate-notes `
+              --verify-tag
+          if ($LASTEXITCODE -ne 0) {
+              throw "Could not create release '$env:RELEASE_TAG' (gh exited with code $LASTEXITCODE)."
+          }
+
+  # NOTE: This job is separate from the "publish" job so that if immutable releases are not enabled,
+  #  the failed jobs in the workflow run can be retried (re-run failed jobs).
+  verify_release_immutability:
+    name: Verify Release Immutability
+
+    needs:
+      - publish_github_release
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up gha-pwsh
+        uses: ./
+
+      # Confirm that GitHub applied immutable-release protection before the sliding tag is updated.
+      - name: Verify GitHub release
+        shell: gha-pwsh {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          # Retrieve the authoritative REST representation because it exposes GitHub's immutable flag and release URL.
+          $releaseJson = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) {
+              throw "Could not retrieve release '$env:RELEASE_TAG' (gh exited with code $LASTEXITCODE)."
+          }
+
+          $release = ConvertFrom-Json ($releaseJson -join [Environment]::NewLine)
+
+          # Require immutable-release protection before allowing consumers of the sliding tag to receive this version.
+          if (-not $release.immutable) {
+              Write-Host "::error::Release '$env:RELEASE_TAG' was published without immutable release protection."
+              exit 1
+          }
+
+  update_sliding_major_tag:
+    name: Update Sliding Major Version Tag
+
+    needs:
+      - validate_release_tag
+      - verify_release_immutability
+
+    permissions:
+      contents: write
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up gha-pwsh
+        uses: ./
+
+      # Point the sliding major tag at this release, but never move it backwards when rerunning an older release.
+      - name: Move major version tag
+        shell: gha-pwsh {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAJOR_TAG: ${{ needs.validate_release_tag.outputs.major_tag }}
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          # Retrieve every published stable release tag so the workflow can identify the newest version in this major line.
+          $releaseTags = @(
+              gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" `
+                  --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name'
+          )
+          if ($LASTEXITCODE -ne 0) {
+              throw "Could not retrieve releases (gh exited with code $LASTEXITCODE)."
+          }
+
+          # Build a safe pattern that selects only stable exact-version tags belonging to the requested major line.
+          $majorTagPattern = '^' + [regex]::Escape($env:MAJOR_TAG) + '\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+
+          # Discard tags from other major lines and anything that does not represent a stable exact version.
+          $matchingReleaseTags = $releaseTags | Where-Object { $_ -match $majorTagPattern }
+
+          # Order the remaining tags by semantic version rather than unreliable string or publication-date ordering.
+          $sortedReleaseTags = $matchingReleaseTags | Sort-Object { [version] $_.Substring(1) } -Descending
+
+          # Select the greatest matching version as the only release allowed to update the sliding tag.
+          $latestReleaseTag = $sortedReleaseTags | Select-Object -First 1
+
+          if (-not $latestReleaseTag) {
+              Write-Host "::error::Could not find a stable release matching '$env:MAJOR_TAG'."
+              exit 1
+          }
+
+          # Don't move the sliding tag (e.g. "v1") to the current release if the current release is not the newest.
+          # This may happen if a dev were to publish, for example, a hotfix for an older version.
+          if ($latestReleaseTag -ne $env:RELEASE_TAG) {
+              Write-Host "Not moving '$env:MAJOR_TAG': the latest matching release is '$latestReleaseTag'."
+              exit 0
+          }
+
+          # Create or move the local sliding tag to the exact commit that was just published and verified.
+          # NOTE: A shallow Git checkout is enough for this because this command doesn't need to know the
+          #   the previous commit the tag was applied to (if any).
+          git tag --force $env:MAJOR_TAG $env:RELEASE_SHA
+          if ($LASTEXITCODE -ne 0) {
+              throw "Could not move local tag '$env:MAJOR_TAG' to '$env:RELEASE_SHA' (git exited with code $LASTEXITCODE)."
+          }
+
+          # Create or replace the corresponding remote tag without pushing any other local tags.
+          git push --force origin "refs/tags/$env:MAJOR_TAG"
+          if ($LASTEXITCODE -ne 0) {
+              throw "Could not push tag '$env:MAJOR_TAG' (git exited with code $LASTEXITCODE)."
+          }
+
+          # Record the exact alias, release, and commit relationship in the workflow log.
+          Write-Host "Moved '$env:MAJOR_TAG' to '$env:RELEASE_TAG' ($env:RELEASE_SHA)."

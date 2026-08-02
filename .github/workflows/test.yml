@@ -7,6 +7,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+  # Called from the release workflow
+  workflow_call:
+
 permissions:
   contents: read
 
