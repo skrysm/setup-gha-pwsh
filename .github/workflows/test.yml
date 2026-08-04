@@ -63,17 +63,33 @@ jobs:
               throw 'The inner script was not executed.'
           }
 
-      # Tests that a (handled) native failure does not fail the workflow step.
-      - name: Ignore native exit codes
+      # Tests that a native failure fails the workflow step.
+      - name: Propagate a native exit code
+        id: native_exit
+        continue-on-error: true
         shell: gha-pwsh {0}
         run: |
           & pwsh -NoLogo -NoProfile -Command 'exit 42'
+      - name: Verify that the native failure failed the step
+        shell: pwsh
+        env:
+          NATIVE_EXIT_STEP_OUTCOME: ${{ steps.native_exit.outcome }}
+        run: |
+          if ($env:NATIVE_EXIT_STEP_OUTCOME -ne 'failure') {
+              throw "Expected the native failure step to fail, but its outcome was '$env:NATIVE_EXIT_STEP_OUTCOME'."
+          }
 
+      # Tests that a handled native failure can explicitly succeed.
+      - name: Handle a native failure
+        shell: gha-pwsh {0}
+        run: |
+          & pwsh -NoLogo -NoProfile -Command 'exit 42'
           if ($LASTEXITCODE -ne 42) {
               throw "Expected the native command to exit with code 42, but got $LASTEXITCODE."
           }
 
           Write-Host 'The native command failure was handled.'
+          exit 0
 
       # Tests that an explicit nonzero exit from the inner script fails the step.
       - name: Propagate a nonzero PowerShell exit code

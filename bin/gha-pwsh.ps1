@@ -28,7 +28,6 @@ try {
         # IMPORTANT: Keep this assignment directly above the dot-source statement.
         $dotSourceLineNumber = (Get-CallerLineNumber) + 1
         . $powershellScriptPath
-        $scriptExitCode = if ($?) { 0 } else { $LASTEXITCODE }
     }
     finally {
         if (-not $hasPowerShellExtension) {
@@ -36,8 +35,20 @@ try {
         }
     }
 
-    # Preserve explicit nonzero exits without leaking a previously handled native exit code.
-    exit $scriptExitCode
+    # A step whose only command is a failing native command is expected to fail. However, when a
+    # script handles a native failure, $LASTEXITCODE still remains nonzero because successful
+    # PowerShell commands do not reset it. The wrapper cannot reliably distinguish an overlooked
+    # native failure from an intentionally handled one, so we match GitHub's built-in PowerShell shell
+    # behavior and propagate $LASTEXITCODE.
+    #
+    # Do NOT replace this with `exit 0`; a script that intentionally handles a native failure must
+    # explicitly reset the exit code itself (for example, with `exit 0`). This can't be done centrally here.
+    #
+    # NOTE: The "Test-Path" condition exists for when the script enables strict mode - which wouldn't
+    #   allow us to use $LASTEXITCODE in case it was never set.
+    if (Test-Path -LiteralPath variable:\LASTEXITCODE) {
+        exit $LASTEXITCODE
+    }
 
     ########################################################################
 }
