@@ -9,8 +9,10 @@
 		"config:recommended"
 	],
 
-	"dependencyDashboard": true,
-	"dependencyDashboardLabels": ["renovate", "dependency-dashboard"],
+	"dependencyDashboard": {
+		"enabled": true,
+		"labels": ["renovate", "dependency-dashboard"]
+	},
 
 	"configMigration": true,
 
